@@ -1,0 +1,12 @@
+.env
+.env.local
+.env.development
+.env.production
+__pycache__/
+*.pyc
+.vscode/
+.DS_Store
+instance/
+backend/__pycache__/
+backend/*.pyc
+backend/.env
