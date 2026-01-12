@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 import yt_dlp
@@ -7,6 +8,11 @@ import os
 from dotenv import load_dotenv
 import uuid
 from pathlib import Path
+import logging
+
+# Configurar logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -14,15 +20,17 @@ load_dotenv()
 TEMP_DIR = Path("temp_videos")
 TEMP_DIR.mkdir(exist_ok=True)
 
-# Lifespan event handler para reemplazar on_event
+# Lifespan event handler
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup: Limpiar archivos antiguos al iniciar
-    print("Limpiando archivos temporales antiguos...")
+    logger.info("🚀 Iniciando servidor...")
+    logger.info("🧹 Limpiando archivos temporales antiguos...")
     cleanup_temp_files()
     yield
     # Shutdown: Limpiar todos los archivos temporales
-    print("Limpiando archivos temporales al cerrar...")
+    logger.info("🛑 Cerrando servidor...")
+    logger.info("🧹 Limpiando archivos temporales...")
     cleanup_temp_files()
 
 def cleanup_temp_files():
@@ -31,26 +39,30 @@ def cleanup_temp_files():
         for file in TEMP_DIR.glob("*.mp4"):
             try:
                 file.unlink()
-                print(f"Eliminado: {file.name}")
+                logger.info(f"✅ Eliminado: {file.name}")
             except Exception as e:
-                print(f"No se pudo eliminar {file.name}: {e}")
+                logger.error(f"❌ No se pudo eliminar {file.name}: {e}")
     except Exception as e:
-        print(f"Error al limpiar archivos: {e}")
+        logger.error(f"❌ Error al limpiar archivos: {e}")
 
 def remove_file(path: Path):
     """Elimina un archivo específico después de enviarlo al cliente"""
     try:
         if path.exists():
             path.unlink()
-            print(f"Archivo eliminado: {path.name}")
+            logger.info(f"🗑️ Archivo eliminado: {path.name}")
     except Exception as e:
-        print(f"Error al eliminar {path.name}: {e}")
+        logger.error(f"❌ Error al eliminar {path.name}: {e}")
 
-app = FastAPI(lifespan=lifespan)
+# Crear aplicación FastAPI
+app = FastAPI(
+    title="TikTok Downloader API",
+    description="API para descargar videos de TikTok sin marca de agua",
+    version="1.0.0",
+    lifespan=lifespan
+)
 
-# Configurar CORS desde .env
-from fastapi.middleware.cors import CORSMiddleware
-
+# Configurar CORS
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")
 
 if ALLOWED_ORIGINS == "*":
@@ -66,8 +78,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-print(f"CORS configurado con orígenes: {origins}")
+logger.info(f"🔒 CORS configurado con orígenes: {origins}")
 
+# Modelos Pydantic
 class URLRequest(BaseModel):
     url: str
 
@@ -78,18 +91,42 @@ class VideoResponse(BaseModel):
     video_id: str
     duration: int
 
+# Rutas de la API
 @app.get("/")
 def read_root():
-    return {"message": "TikTok Downloader API", "status": "running"}
+    """Endpoint raíz - Health check básico"""
+    return {
+        "message": "TikTok Downloader API",
+        "status": "running",
+        "version": "1.0.0"
+    }
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint para Render"""
+    return {
+        "status": "healthy",
+        "service": "tiktok-downloader-api"
+    }
 
 @app.post("/api/download", response_model=VideoResponse)
 async def get_video_info(request: URLRequest):
+    """
+    Obtiene información del video de TikTok sin descargarlo
+    """
     try:
+        logger.info(f"📥 Solicitando información del video: {request.url}")
+        
         # Configuración de yt-dlp para extraer información
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
+            'nocheckcertificate': True,
+            'http_headers': {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Referer': 'https://www.tiktok.com/',
+            },
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -99,20 +136,35 @@ async def get_video_info(request: URLRequest):
                 
                 # Generar ID único para el video
                 video_id = str(uuid.uuid4())
+                
+                title = info.get('title', 'Video de TikTok')
+                author = info.get('uploader', 'Desconocido')
+                
+                logger.info(f"✅ Información obtenida: {title} por {author}")
 
                 return VideoResponse(
-                    title=info.get('title', 'Video de TikTok'),
-                    author=info.get('uploader', 'Desconocido'),
+                    title=title,
+                    author=author,
                     thumbnail=info.get('thumbnail', ''),
                     video_id=video_id,
                     duration=int(info.get('duration', 0))
                 )
             
             except yt_dlp.utils.DownloadError as e:
-                raise HTTPException(status_code=400, detail=f"Error al procesar el video: {str(e)}")
+                logger.error(f"❌ Error de yt-dlp: {str(e)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No se pudo procesar el video. Verifica que la URL sea válida y el video esté disponible."
+                )
             
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error interno del servidor: {str(e)}")
+        logger.error(f"❌ Error interno: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error interno del servidor: {str(e)}"
+        )
 
 @app.post("/api/download-file")
 async def download_video_file(request: URLRequest, background_tasks: BackgroundTasks):
@@ -122,17 +174,23 @@ async def download_video_file(request: URLRequest, background_tasks: BackgroundT
     
     El archivo se elimina automáticamente después de enviarlo al cliente
     """
+    output_path = None
+    
     try:
+        logger.info(f"📥 Iniciando descarga de video: {request.url}")
+        
         # Generar nombre único para el archivo temporal
         video_id = str(uuid.uuid4())
         output_path = TEMP_DIR / f"{video_id}.mp4"
+        
+        # Configuración optimizada de yt-dlp
         ydl_opts = {
             'format': (
                 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/'
                 'bestvideo+bestaudio/best'
             ),
             'outtmpl': str(output_path),
-            'merge_output_format': 'mp4', 
+            'merge_output_format': 'mp4',
             'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'mp4',
@@ -155,18 +213,30 @@ async def download_video_file(request: URLRequest, background_tasks: BackgroundT
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
-                print(f"📥 Descargando video en máxima calidad disponible...")
+                # Descargar video
                 info = ydl.extract_info(request.url, download=True)
+                
+                # Obtener información del video
                 title = info.get('title', 'video')
                 safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
                 safe_title = safe_title[:50]
+                
                 width = info.get('width', 0)
                 height = info.get('height', 0)
-                file_size = output_path.stat().st_size / (1024 * 1024)
-                print(f"✅ Video descargado: {width}x{height} ({file_size:.2f} MB)")
+                
+                # Verificar que el archivo existe
                 if not output_path.exists():
-                    raise HTTPException(status_code=500, detail="Error al descargar el video")
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Error: el video se descargó pero no se encuentra el archivo"
+                    )
+                
+                file_size = output_path.stat().st_size / (1024 * 1024)
+                logger.info(f"✅ Video descargado: {width}x{height} ({file_size:.2f} MB)")
+                
+                # Programar eliminación del archivo después de enviarlo
                 background_tasks.add_task(remove_file, output_path)
+                
                 return FileResponse(
                     path=str(output_path),
                     media_type='video/mp4',
@@ -174,22 +244,32 @@ async def download_video_file(request: URLRequest, background_tasks: BackgroundT
                 )
             
             except yt_dlp.utils.DownloadError as e:
-                if output_path.exists():
+                logger.error(f"❌ Error al descargar: {str(e)}")
+                if output_path and output_path.exists():
                     output_path.unlink()
-                raise HTTPException(status_code=400, detail=f"Error al descargar el video: {str(e)}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"No se pudo descargar el video. Verifica que la URL sea válida."
+                )
             
     except HTTPException:
         raise
     except Exception as e:
-        if 'output_path' in locals() and output_path.exists():
+        logger.error(f"❌ Error interno en descarga: {str(e)}")
+        if output_path and output_path.exists():
             output_path.unlink()
-        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error interno: {str(e)}"
+        )
 
-@app.get("/health")
-def health_check():
-    return {"status": "healthy"}
-
+# Para desarrollo local
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=True
+    )
