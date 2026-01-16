@@ -278,8 +278,9 @@ function App() {
   const isDisabled = loading || downloading || cooldown > 0 || serverStatus.isWaking
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-purple-500 via-pink-500 to-red-500 flex items-center justify-center p-4">
-      <div className="max-w-2xl w-full">
+    <div className="min-h-screen bg-gradient-to-br from-purple-500 via-pink-500 to-red-500 flex flex-col justify-between p-4">
+      <div className="flex-1 flex items-center justify-center">
+        <div className="max-w-2xl w-full">
         {/* Header */}
         <div className="text-center mb-8">
           <h1 className="text-5xl font-bold text-white mb-2 drop-shadow-lg">
@@ -465,11 +466,12 @@ function App() {
           {/* Video Preview */}
           {videoData && !serverStatus.isWaking && (
             <div className="mt-6 space-y-4">
-              <div className="border border-gray-200 rounded-xl overflow-hidden">
+              <div className="border border-gray-200 rounded-xl overflow-hidden flex justify-center">
                 <img
                   src={videoData.thumbnail}
                   alt={videoData.title}
-                  className="w-full h-auto"
+                  className="max-w-2xl w-full max-h-125 h-auto object-contain"
+                  style={{ display: 'block' }}
                 />
               </div>
 
@@ -587,6 +589,20 @@ function App() {
             ℹ️ Si el servidor está inactivo, la primera descarga puede tomar 30-60 segundos
           </p>
         </div>
+      </div>
+      </div>
+      <div className="mb-2 flex flex-col items-center text-center select-none">
+        <span className="text-xs text-white/70 font-light">
+          Desarrollado por <span className="font-semibold text-white/90">Cristian Ramírez</span> ·
+          <a
+            href="https://github.com/CristianRC7/TikTokDownloader"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="ml-1 underline text-blue-200 hover:text-blue-400 transition-colors"
+          >
+            Dale una estrella ⭐ al repositorio
+          </a>
+        </span>
       </div>
     </div>
   )
