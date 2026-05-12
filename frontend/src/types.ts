@@ -14,7 +14,10 @@ export interface VideoData {
   thumbnail: string
   video_id: string
   duration: number
+  platform: 'tiktok' | 'instagram'
 }
+
+export type Platform = 'tiktok' | 'instagram' | null
 
 // ─────────────────────────────────────────────────────────────
 // TIPOS DE ESTADO DEL SERVIDOR

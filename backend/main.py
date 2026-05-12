@@ -10,31 +10,25 @@ import uuid
 from pathlib import Path
 import logging
 
-# Configurar logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-# Crear directorio temporal para videos
 TEMP_DIR = Path("temp_videos")
 TEMP_DIR.mkdir(exist_ok=True)
 
-# Lifespan event handler
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Limpiar archivos antiguos al iniciar
     logger.info("🚀 Iniciando servidor...")
-    logger.info("🧹 Limpiando archivos temporales antiguos...")
     cleanup_temp_files()
     yield
-    # Shutdown: Limpiar todos los archivos temporales
     logger.info("🛑 Cerrando servidor...")
-    logger.info("🧹 Limpiando archivos temporales...")
     cleanup_temp_files()
 
+
 def cleanup_temp_files():
-    """Limpia todos los archivos MP4 en el directorio temporal"""
     try:
         for file in TEMP_DIR.glob("*.mp4"):
             try:
@@ -45,8 +39,8 @@ def cleanup_temp_files():
     except Exception as e:
         logger.error(f"❌ Error al limpiar archivos: {e}")
 
+
 def remove_file(path: Path):
-    """Elimina un archivo específico después de enviarlo al cliente"""
     try:
         if path.exists():
             path.unlink()
@@ -54,15 +48,36 @@ def remove_file(path: Path):
     except Exception as e:
         logger.error(f"❌ Error al eliminar {path.name}: {e}")
 
-# Crear aplicación FastAPI
+
+def detect_platform(url: str) -> str:
+    url_lower = url.lower()
+    if 'tiktok.com' in url_lower or 'vm.tiktok.com' in url_lower:
+        return 'tiktok'
+    if 'instagram.com' in url_lower or 'instagr.am' in url_lower:
+        return 'instagram'
+    return 'unknown'
+
+
+def build_http_headers(platform: str) -> dict:
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-us,en;q=0.5',
+    }
+    if platform == 'tiktok':
+        headers['Referer'] = 'https://www.tiktok.com/'
+    elif platform == 'instagram':
+        headers['Referer'] = 'https://www.instagram.com/'
+    return headers
+
+
 app = FastAPI(
-    title="TikTok Downloader API",
-    description="API para descargar videos de TikTok sin marca de agua",
-    version="1.0.0",
+    title="TikTok & Instagram Downloader API",
+    description="API para descargar videos de TikTok e Instagram sin marca de agua",
+    version="2.0.0",
     lifespan=lifespan
 )
 
-# Configurar CORS
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*")
 
 if ALLOWED_ORIGINS == "*":
@@ -80,9 +95,10 @@ app.add_middleware(
 
 logger.info(f"🔒 CORS configurado con orígenes: {origins}")
 
-# Modelos Pydantic
+
 class URLRequest(BaseModel):
     url: str
+
 
 class VideoResponse(BaseModel):
     title: str
@@ -90,56 +106,56 @@ class VideoResponse(BaseModel):
     thumbnail: str
     video_id: str
     duration: int
+    platform: str
 
-# Rutas de la API
+
 @app.get("/")
 def read_root():
-    """Endpoint raíz - Health check básico"""
     return {
-        "message": "TikTok Downloader API",
+        "message": "TikTok & Instagram Downloader API",
         "status": "running",
-        "version": "1.0.0"
+        "version": "2.0.0"
     }
+
 
 @app.get("/health")
 def health_check():
-    """Health check endpoint para Render"""
     return {
         "status": "healthy",
-        "service": "tiktok-downloader-api"
+        "service": "social-downloader-api"
     }
+
 
 @app.post("/api/download", response_model=VideoResponse)
 async def get_video_info(request: URLRequest):
-    """
-    Obtiene información del video de TikTok sin descargarlo
-    """
+    platform = detect_platform(request.url)
+    if platform == 'unknown':
+        raise HTTPException(
+            status_code=400,
+            detail="URL no soportada. Solo se aceptan URLs de TikTok o Instagram."
+        )
+
     try:
-        logger.info(f"📥 Solicitando información del video: {request.url}")
-        
-        # Configuración de yt-dlp para extraer información
+        logger.info(f"📥 [{platform.upper()}] Solicitando información: {request.url}")
+
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'extract_flat': False,
             'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'https://www.tiktok.com/',
-            },
+            'http_headers': build_http_headers(platform),
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
-                # Extraer información del video
                 info = ydl.extract_info(request.url, download=False)
-                
-                # Generar ID único para el video
+
                 video_id = str(uuid.uuid4())
-                
-                title = info.get('title', 'Video de TikTok')
-                author = info.get('uploader', 'Desconocido')
-                
+
+                default_title = 'Video de TikTok' if platform == 'tiktok' else 'Video de Instagram'
+                title = info.get('title') or info.get('description') or default_title
+                author = info.get('uploader') or info.get('channel') or 'Desconocido'
+
                 logger.info(f"✅ Información obtenida: {title} por {author}")
 
                 return VideoResponse(
@@ -147,16 +163,17 @@ async def get_video_info(request: URLRequest):
                     author=author,
                     thumbnail=info.get('thumbnail', ''),
                     video_id=video_id,
-                    duration=int(info.get('duration', 0))
+                    duration=int(info.get('duration') or 0),
+                    platform=platform
                 )
-            
+
             except yt_dlp.utils.DownloadError as e:
                 logger.error(f"❌ Error de yt-dlp: {str(e)}")
                 raise HTTPException(
                     status_code=400,
-                    detail=f"No se pudo procesar el video. Verifica que la URL sea válida y el video esté disponible."
+                    detail="No se pudo procesar el video. Verifica que la URL sea válida y el video esté disponible."
                 )
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -166,24 +183,24 @@ async def get_video_info(request: URLRequest):
             detail=f"Error interno del servidor: {str(e)}"
         )
 
+
 @app.post("/api/download-file")
 async def download_video_file(request: URLRequest, background_tasks: BackgroundTasks):
-    """
-    Descarga el video en la MEJOR CALIDAD DISPONIBLE
-    TikTok generalmente solo ofrece una calidad por video
-    
-    El archivo se elimina automáticamente después de enviarlo al cliente
-    """
+    platform = detect_platform(request.url)
+    if platform == 'unknown':
+        raise HTTPException(
+            status_code=400,
+            detail="URL no soportada. Solo se aceptan URLs de TikTok o Instagram."
+        )
+
     output_path = None
-    
+
     try:
-        logger.info(f"📥 Iniciando descarga de video: {request.url}")
-        
-        # Generar nombre único para el archivo temporal
+        logger.info(f"📥 [{platform.upper()}] Iniciando descarga: {request.url}")
+
         video_id = str(uuid.uuid4())
         output_path = TEMP_DIR / f"{video_id}.mp4"
-        
-        # Configuración optimizada de yt-dlp
+
         ydl_opts = {
             'format': (
                 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/'
@@ -200,12 +217,7 @@ async def download_video_file(request: URLRequest, background_tasks: BackgroundT
             'quiet': True,
             'no_warnings': True,
             'nocheckcertificate': True,
-            'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Referer': 'https://www.tiktok.com/',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-            },
+            'http_headers': build_http_headers(platform),
             'concurrent_fragment_downloads': 5,
             'retries': 3,
             'fragment_retries': 3,
@@ -213,45 +225,41 @@ async def download_video_file(request: URLRequest, background_tasks: BackgroundT
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             try:
-                # Descargar video
                 info = ydl.extract_info(request.url, download=True)
-                
-                # Obtener información del video
-                title = info.get('title', 'video')
+
+                title = info.get('title') or info.get('description') or 'video'
                 safe_title = "".join(c for c in title if c.isalnum() or c in (' ', '-', '_')).strip()
                 safe_title = safe_title[:50]
-                
+
                 width = info.get('width', 0)
                 height = info.get('height', 0)
-                
-                # Verificar que el archivo existe
+
                 if not output_path.exists():
                     raise HTTPException(
                         status_code=500,
                         detail="Error: el video se descargó pero no se encuentra el archivo"
                     )
-                
+
                 file_size = output_path.stat().st_size / (1024 * 1024)
-                logger.info(f"✅ Video descargado: {width}x{height} ({file_size:.2f} MB)")
-                
-                # Programar eliminación del archivo después de enviarlo
+                logger.info(f"✅ [{platform.upper()}] Video descargado: {width}x{height} ({file_size:.2f} MB)")
+
                 background_tasks.add_task(remove_file, output_path)
-                
+
                 return FileResponse(
                     path=str(output_path),
                     media_type='video/mp4',
                     filename=f"{safe_title}_HD.mp4"
                 )
-            
+
             except yt_dlp.utils.DownloadError as e:
                 logger.error(f"❌ Error al descargar: {str(e)}")
                 if output_path and output_path.exists():
                     output_path.unlink()
                 raise HTTPException(
                     status_code=400,
-                    detail=f"No se pudo descargar el video. Verifica que la URL sea válida."
+                    detail="No se pudo descargar el video. Verifica que la URL sea válida."
                 )
-            
+
     except HTTPException:
         raise
     except Exception as e:
@@ -263,7 +271,7 @@ async def download_video_file(request: URLRequest, background_tasks: BackgroundT
             detail=f"Error interno: {str(e)}"
         )
 
-# Para desarrollo local
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
